@@ -11,18 +11,26 @@ module Ancestry
       unless ancestry_callbacks_disabled?
         # If node is valid, not a new record and ancestry was updated ...
         if changed.include?(self.base_class.ancestry_column.to_s) && !new_record? && valid?
-          # ... for each descendant ...
-          descendants.each do |descendant|
-            # ... replace old ancestry with new ancestry
-            descendant.without_ancestry_callbacks do
-              descendant.update_attributes(
-                self.base_class.ancestry_column =>
-                descendant.read_attribute(descendant.class.ancestry_column).gsub(
-                  /^#{self.child_ancestry}/, 
-                  if read_attribute(self.class.ancestry_column).blank? then id.to_s else "#{read_attribute self.class.ancestry_column }/#{id}" end
-                )
-              )
+          # ... group the descendants by their new ancestry values
+          grouped = descendants.group_by do |descendant|
+            descendant.read_attribute(descendant.class.ancestry_column).gsub(
+              /^#{self.child_ancestry}/,
+              if read_attribute(self.class.ancestry_column).blank? then id.to_s else "#{read_attribute self.class.ancestry_column }/#{id}" end
+            )
+          end
+
+          unless grouped.empty?
+            # ... build sql case statement for a single update
+            quoted_id = connection.quote_column_name(self.class.primary_key)
+            ids_list = []
+            case_stmt = "CASE "
+            grouped.each do |new_ancestry, descendants|
+              ids = descendants.map(&:id)
+              ids_list += ids
+              case_stmt << "WHEN #{quoted_id} IN (#{ids.map { |id| quote_value(id) }.join(',')}) THEN #{quote_value(new_ancestry)} "
             end
+            case_stmt << "END"
+            connection.update("UPDATE #{self.class.quoted_table_name} SET #{self.class.ancestry_column} = #{case_stmt} WHERE #{quoted_id} IN (#{ids_list.map { |id| quote_value(id) }.join(',')})", "#{self.class.name} Update")
           end
         end
       end
